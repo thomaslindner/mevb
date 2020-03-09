@@ -283,81 +283,83 @@ INT frontend_init() {
     return 0;
   }
   
-	/* Read & Build the fragment list by scanning the ODB /Equipment tree
-	 */
-	for (i = 0 ;; i++) {
-		unsigned short trigger_mask, event_id;
-		const char bufname[NAME_LENGTH]={""};
-		const char fename[NAME_LENGTH]={""};
-		db_enum_key(hDB, hEqKey, i, &hSubkey);
-		if (!hSubkey)  break;
-		db_get_key(hDB, hSubkey, &key);
-		// Go in the equipment directories
-		if (key.type == TID_KEY) {
-			/* Check if equipment is EQ_EB */
-			size = sizeof(INT);
-			db_get_value(hDB, hSubkey, "common/type", &type, &size, TID_INT, 0);
-			if (type & EQ_EB) {
-				size = sizeof(fename);
-				db_get_value(hDB, hSubkey, "common/Frontend name", (void *)fename, &size, TID_STRING, 0);
-				size = sizeof(bufname);
-				db_get_value(hDB, hSubkey, "common/Buffer", (void *)bufname, &size, TID_STRING, 0);
-				size = sizeof(WORD);
-				db_get_value(hDB, hSubkey, "common/Trigger Mask", &trigger_mask, &size, TID_WORD, 0);
-				size = sizeof(WORD);
-				db_get_value(hDB, hSubkey, "common/Event ID", &event_id, &size, TID_WORD, 0);
-
-				// Inserts a new object at the end of the vector
-				ebfragment.push_back(hDB);
-				// .back(): Returns a reference to the last element in the vector
-				// Fill the object Fragment
-				ebfragment.back().SetVerbosity(0);
-				ebfragment.back().SetEqpName(key.name);      // Equipment name
-				ebfragment.back().SetFrontEndName(fename);   // Front-end name
-				ebfragment.back().SetBufferName(bufname);    // Buffer name
-				ebfragment.back().SetTmask(trigger_mask);    // Trigger Mask
-				ebfragment.back().SetEvID(event_id);         // Event ID
-
-				if (debug) {
-					printf(" - Fragment %d - Eqp:%s,  evID %d, Tmask:0x%x, buffer %s\n"
-						,i , ebfragment.back().GetEqpName().c_str()
-						, ebfragment.back().GetEvID()
-						, ebfragment.back().GetTmask()
-						, ebfragment.back().GetBufferName().c_str());
-				}
-				//            ebfragment.back().SetFragmentRecord(hDB);
-
-			} else { // Equipment not involved in the EBuilder
-				if (debug) printf("\r");
-			}
-		}
-	} // for loop over odb enumeration
-
-	if (debug) {
-		printf("Number of objects: ebfragment.size()=%ld\n", ebfragment.size());
-		for (itebfragment=ebfragment.begin() ; itebfragment!=ebfragment.end(); ++itebfragment) {
-			printf("Before ordering         - Equipment name: %s,  evID %d, Tmask:0x%x, buffer %s\n"
-					, itebfragment->GetEqpName().c_str()
-					, itebfragment->GetEvID()
-					, itebfragment->GetTmask()
-					, itebfragment->GetBufferName().c_str());
-		}
-	}
-
-	/* Sort the ebfragment vector correctly once for all.
-	 *  Sort fragment object based on the trigger mask.
-	 *  The DTM fragment should be first and will always be present in the every
-	 *  assembled event.
-	 *  DTM Event  ID = 1, trigger mask = 0x0001
-	 *  V1720-0    ID = 1, trigger mask = 0x0002
-	 *  V1720-1    ID = 1, trigger mask = 0x0004
-	 *  V1720-2    ID = 1, trigger mask = 0x0008
-	 *  V1720-3    ID = 1, trigger mask = 0x0010
-	 *  V1740      ID = 1, trigger mask = 0x0020
-	 *  V1740-VETO ID = 1, trigger mask = 0x0040
-	 *  Sort objects based on Tmask from low to high values
-	 */
-	std::sort(ebfragment.begin(), ebfragment.end());
+  /* Read & Build the fragment list by scanning the ODB /Equipment tree
+   */
+  for (i = 0 ;; i++) {
+    unsigned short trigger_mask, event_id;
+    char bufname[NAME_LENGTH];
+    char fename[NAME_LENGTH];
+    db_enum_key(hDB, hEqKey, i, &hSubkey);
+    if (!hSubkey)  break;
+    db_get_key(hDB, hSubkey, &key);
+    // Go in the equipment directories
+    if (key.type == TID_KEY) {
+      /* Check if equipment is EQ_EB */
+      size = sizeof(INT);
+      db_get_value(hDB, hSubkey, "common/type", &type, &size, TID_INT, 0);
+      if (type & EQ_EB) {
+        std::cout << "Found an equipment to add. type= " << std::hex << type << std::dec << std::endl;
+        size = sizeof(fename);
+        db_get_value(hDB, hSubkey, "common/Frontend name", (void *)fename, &size, TID_STRING, 0);
+        std::cout << "Adding equipment fragment : " << fename << std::endl;
+        size = sizeof(bufname);
+        db_get_value(hDB, hSubkey, "common/Buffer", (void *)bufname, &size, TID_STRING, 0);
+        size = sizeof(WORD);
+        db_get_value(hDB, hSubkey, "common/Trigger Mask", &trigger_mask, &size, TID_WORD, 0);
+        size = sizeof(WORD);
+        db_get_value(hDB, hSubkey, "common/Event ID", &event_id, &size, TID_WORD, 0);
+        
+        // Inserts a new object at the end of the vector
+        ebfragment.push_back(hDB);
+        // .back(): Returns a reference to the last element in the vector
+        // Fill the object Fragment
+        ebfragment.back().SetVerbosity(0);
+        ebfragment.back().SetEqpName(key.name);      // Equipment name
+        ebfragment.back().SetFrontEndName(fename);   // Front-end name
+        ebfragment.back().SetBufferName(bufname);    // Buffer name
+        ebfragment.back().SetTmask(trigger_mask);    // Trigger Mask
+        ebfragment.back().SetEvID(event_id);         // Event ID
+        
+        if (debug) {
+          printf(" - Fragment %d - Eqp:%s,  evID %d, Tmask:0x%x, buffer %s\n"
+                 ,i , ebfragment.back().GetEqpName().c_str()
+                 , ebfragment.back().GetEvID()
+                 , ebfragment.back().GetTmask()
+                 , ebfragment.back().GetBufferName().c_str());
+        }
+        //            ebfragment.back().SetFragmentRecord(hDB);
+        
+      } else { // Equipment not involved in the EBuilder
+        if (debug) printf("\r");
+      }
+    }
+  } // for loop over odb enumeration
+  
+  if (debug) {
+    printf("Number of objects: ebfragment.size()=%ld\n", ebfragment.size());
+    for (itebfragment=ebfragment.begin() ; itebfragment!=ebfragment.end(); ++itebfragment) {
+      printf("Before ordering         - Equipment name: %s,  evID %d, Tmask:0x%x, buffer %s\n"
+             , itebfragment->GetEqpName().c_str()
+             , itebfragment->GetEvID()
+             , itebfragment->GetTmask()
+             , itebfragment->GetBufferName().c_str());
+    }
+  }
+  
+  /* Sort the ebfragment vector correctly once for all.
+   *  Sort fragment object based on the trigger mask.
+   *  The DTM fragment should be first and will always be present in the every
+   *  assembled event.
+   *  DTM Event  ID = 1, trigger mask = 0x0001
+   *  V1720-0    ID = 1, trigger mask = 0x0002
+   *  V1720-1    ID = 1, trigger mask = 0x0004
+   *  V1720-2    ID = 1, trigger mask = 0x0008
+   *  V1720-3    ID = 1, trigger mask = 0x0010
+   *  V1740      ID = 1, trigger mask = 0x0020
+   *  V1740-VETO ID = 1, trigger mask = 0x0040
+   *  Sort objects based on Tmask from low to high values
+   */
+  std::sort(ebfragment.begin(), ebfragment.end());
   
   if (debug) {
     printf("\n");
@@ -378,10 +380,10 @@ INT frontend_init() {
   }
   
   // No more fragment to register
-  if (ebfragment.size() > 1)
+  if (ebfragment.size() >= 1)
     printf("Found %ld fragments for event building\n", ebfragment.size());
   else
-    printf("Found one fragment for event building\n");
+    printf("Found zero fragment for event building... this isn't going to work\n");
   
   /* Create if not present Ebuilder Global var under /settings/ in ODB
    * For now only 3 parameters, may contain time stamp window, Qthreshold, ...
@@ -410,6 +412,7 @@ INT frontend_init() {
   std::cout << "Finished initialization"<<std::endl;
   // web status
   set_equipment_status(equipment[EBUILDER_EQUIPMENT].name, "Initialized", "#00ff00");
+
   return SUCCESS;
 }						
 
@@ -713,7 +716,8 @@ INT begin_of_run(INT run_number, char *error) {
  * \param   [out] none
  */
 void * fragment_thread(void * arg) {
-  
+
+  std::cout << "Start a thread " << std::endl;
   EBFragment * pebfragment = (EBFragment *) arg;
   int rb_handle = pebfragment->GetRingBufferHandle();
   int fragment = pebfragment->GetFragmentID();
@@ -1021,8 +1025,7 @@ extern "C" INT poll_event(INT source, INT count, BOOL test)
     
     bool evtReady = true;
     
-		
-    // Check for data in DTM fragment (first fragment)
+     // Check for data in DTM fragment (first fragment)
     itebfragment = ebfragment.begin();
     if (!itebfragment->GetEnable() || itebfragment->GetTmask() != 0x1){
       
@@ -1032,21 +1035,21 @@ extern "C" INT poll_event(INT source, INT count, BOOL test)
       itebfragment = ebfragment.begin();
 			bool enable = itebfragment->GetEnable();
 			int mask =  itebfragment->GetTmask();
-      if (!enable || mask != 0x1){
+                        if (!enable || mask != 0x1){
         std::string name = itebfragment->GetBufferName();
 	
-				cm_msg(MERROR, "poll_event", "DTM front-end not enabled; poll_event will fail! %i %i (now %i %i %s)",
-							 enable,mask,itebfragment->GetEnable(),itebfragment->GetTmask(),name.c_str());
-				usleep(100);
-				continue;
-      }
+        cm_msg(MERROR, "poll_event", "DTM front-end not enabled; poll_event will fail! %i %i (now %i %i %s)",
+               enable,mask,itebfragment->GetEnable(),itebfragment->GetTmask(),name.c_str());
+        usleep(100);
+        continue;
+                        }
     }			
     
     // Check if we have DTM fragment; if not, keep looping.
     if(itebfragment->GetNumEventsInRB() == 0){
-			usleep(100);
-			continue;
-		}
+      usleep(100);
+      continue;
+    }
     
     // Grab the output mask from DTM bank.
     std::pair<unsigned int,unsigned int> result = itebfragment->GetDTMTriggerMaskUsed();
@@ -1055,6 +1058,7 @@ extern "C" INT poll_event(INT source, INT count, BOOL test)
     // Loop over other fragments.
     for(unsigned int ifrag = 1; ifrag < ebfragment.size(); ifrag++){
       
+      std::cout << "Check ifrag: " << ifrag << std::endl;
       // If the fragment is disabled, then ignore
       if (!ebfragment[ifrag].GetEnable()){continue;}
       
@@ -1071,8 +1075,7 @@ extern "C" INT poll_event(INT source, INT count, BOOL test)
     if (evtReady && !test){
       return 1;
     }
-    //			cm_yield(0);
-		usleep(100);
+    usleep(100);
   }
 #endif
   

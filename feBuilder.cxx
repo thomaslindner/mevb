@@ -43,30 +43,6 @@ In the main thread (collector thread), it is possible after confirmation of
 Time Stamp matching to evaluate the "extra fragment information" in order to
 dynamically change the composition of the final event.
 
-\subsection deap DEAP-3600 notes
-In the DEAP case, the event builder is operated in "Time Stamp matching & trigger mask".
-Each fragment is providing a Time Stamp which is compared to the Trigger fragment time stamp.
-
-In other word:
-
-- The "Trigger fragment" is present for every event assembly
-- It always contain the reference Time Stamp and a trigger mask indicating which
-  fragments are to be present.
-- Each other fragment contains a Time Stamp to be compared to the "Trigger fragment"
-
-In Deap, each fragment thread does inline data processing to:
-
-- build a histogram of the charge versus time across all the channels found in that fragment
-- In this case, each thread deals with 8xV1720 of 8 channels each => 64 channels. Based on 
-  an average of 8 pulses per channel over the 10us sampling, a histogram of 250 bins will 
-  contain ~512 entries. This histogram is appended to the copied fragment event in the ring buffer
-
-In the main thread (collector thread), after Time stamp matching, the QvsT histogram of each of 
-the expected fragment (based of the trigger mask of the "trigger fragment" bank), will be summed 
-(across the relevant fragments). This histogram is then used for trigger decision and defines
-a speific list of the banks to be assembled in the final event.
-
-\subsection deapusage Usage
 - feBuilder.exe
 
  *************************************************************************/
@@ -84,7 +60,7 @@ a speific list of the banks to be assembled in the final event.
 
 #include "midas.h"
 #include "ebFragment.hxx"
-#include "ebSmartQTFilter.hxx"
+
 
 // __________________________________________________________________
 // --- General feBuilder parameters
@@ -234,7 +210,6 @@ EQUIPMENT equipment[] =
 std::vector<EBFragment> ebfragment;               //!< objects for each fragment
 std::vector<EBFragment>::iterator itebfragment;   //!< Main thread iterator
 
-ebSmartQTFilter *smartQTFilter; //!< object for filtering ZLE/QT block-by-block.
 
 pthread_t tid[NBFRAGMENT];                 //!< Thread ID
 int thread_retval[NBFRAGMENT] = {0};       //!< Thread return value
@@ -424,9 +399,6 @@ INT frontend_init() {
   db_get_value(hDB, hsf
 	       , "Modulo", &_modulo, &size, TID_INT, TRUE);  // Create if not present
   
-  // Create object for making filter decisions
-  smartQTFilter = new ebSmartQTFilter();
-  
   // CPU core allocation (0 for the main thread)
   //cpu_set_t mask;
   //CPU_ZERO(&mask);
@@ -576,164 +548,156 @@ INT begin_of_run(INT run_number, char *error) {
   size = sizeof(rebin_factor);
   db_get_value(hDB, hsf, "QT summary rebin factor", &rebin_factor, &size, TID_INT, TRUE);
 
-	// Get the ODB variable that determines whether to stop the run for timestamp mismatchs. 
-	size = sizeof(fStrictTimestampMatching); 
-	db_get_value(hDB, hsf, "strictTimestampMatching",&fStrictTimestampMatching, &size, TID_BOOL, TRUE);
-
-
-	/* local flag indicating that a run is in progress
-	 * Todo: need to check the escape condition...
-	 */
-	runInProgress = true;
-
-	// flag to ensure we only stop run once if we have timestamp mismatchs
-	eor_transition_called = false;
-
-	timestampErrorWarning = false;
-
-	if (!smartQTFilter->ReadODB(hDB)) {
-	  // Failed to read all the info we need from ODB - break out.
-    cm_msg(MERROR,"feBuilder:BOR", "Failed to read ODB for smart QT filter - abort start of run");
-    set_equipment_status(equipment[EBUILDER_EQUIPMENT].name, "Ended run", "#00ff00");
-    thread_cleanup();
-    return SS_ABORT;
-	}
-
-	// Per found fragment in the ODB equipment list
-	for (itebfragment = ebfragment.begin(); itebfragment != ebfragment.end(); ++itebfragment) {
-		
-		// Reset thread status
-		itebfragment->SetThreadStatus(0);
-
-		// Update Enable flag from ODB
-		int bsize = sizeof(BOOL);
-		bool fragE;
-		int status = db_get_value(itebfragment->GetODBHandle()
-															, itebfragment->GetSettingsHandle(), "enable", &fragE, &bsize, TID_BOOL, FALSE);
-		itebfragment->SetEnable(fragE);
-		if (! itebfragment->IsEnabled()) {
-			cm_msg(MINFO, "ebuilder", "Fragment %s disabled", itebfragment->GetEqpName().c_str());
-			continue;   // Skip disabled fragment
-		}
-
-		int check_fragment_running = cm_exist(itebfragment->GetFrontEndName().c_str(), TRUE);
-		if(check_fragment_running != CM_SUCCESS){
-			cm_msg(MERROR, "feBuilder:BOR", "Event Builder Fragment %s (program %s) is not running. Not allowed: abort run. Disable this EB fragment or start front-end."
-						 , itebfragment->GetEqpName().c_str(),itebfragment->GetFrontEndName().c_str());			
-			set_equipment_status(equipment[EBUILDER_EQUIPMENT].name, "Ended run", "#00ff00");
-			thread_cleanup();
-			return BM_CONFLICT;
-		
-		}
-
-		// Make sure the fragment buffer is not 'SYSTEM'.  That will presumably cause problems.
-		if(strcmp (itebfragment->GetBufferName().c_str(),"SYSTEM") == 0){
-			cm_msg(MERROR, "feBuilder:BOR", "Event Builder Fragment %s is writing to SYSTEM buffer. Not allowed: abort run. Disable this EB fragment."
-						 , itebfragment->GetEqpName().c_str());			
-			set_equipment_status(equipment[EBUILDER_EQUIPMENT].name, "Ended run", "#00ff00");
-			thread_cleanup();
-			return BM_CONFLICT;
-		}
-		
-		// Set the binning for the QT summary histogram
-	  itebfragment->SetRebinFactor(rebin_factor);
-
-		// Connect to fragment buffer
-		int bh;
-		status1 = bm_open_buffer((itebfragment->GetBufferName().c_str()), BM_BUFFER_SIZE, &bh);
-		// Save buffer handle
-		if (status1 == BM_SUCCESS) {
-			itebfragment->SetBufferHandle(bh);
-		} else {
-			itebfragment->SetBufferHandle(-1);
-		}
-		
-		if (debug) printf("bm_open_buffer:%d\n", itebfragment->GetBufferHandle());
-		
-		if (itebfragment->GetBufferHandle() >= 0) {
-			// Register for specified channel event ID but all Trigger mask AND ALL EVENTS
-			int rid;
-			status2 = bm_request_event(itebfragment->GetBufferHandle(), itebfragment->GetEvID()
-																 , TRIGGER_ALL, GET_ALL, &rid, NULL);
-			// Save event request ID
-			if (status2 == BM_SUCCESS) {
-				itebfragment->SetRequestID(rid);
-			} else {
-				itebfragment->SetRequestID(-1);
-			}
-		}
-		
-		if (debug) printf("bm_request_event:%d\n", itebfragment->GetRequestID());
-		
-		// Handle connection to buffer error
-		if (((status1 != BM_SUCCESS) && (status1 != BM_CREATED)) ||
-				((status2 != BM_SUCCESS) && (status2 != BM_CREATED))) {
-			cm_msg(MERROR, "BOR_booking", "Open buffer/event request failure %s [%d %d]"
-						 , itebfragment->GetEqpName().c_str(), status1, status2);
-			set_equipment_status(equipment[EBUILDER_EQUIPMENT].name, "Ended run", "#00ff00");
-			thread_cleanup();
-			return BM_CONFLICT;
-		}
-		
-		// Create ring buffer for fragment
-		status = rb_create(event_buffer_size, max_event_size, &rb_handle);
-		printf("Ring buffer size: %i ; max event: %i\n",event_buffer_size, max_event_size);
-		if(status == BM_SUCCESS) {
-			itebfragment->SetRingBufferHandle(rb_handle);
-			if (debug) printf("rb_create_event:%d\n", itebfragment->GetRingBufferHandle());
-			
-		} else {
-			cm_msg(MERROR, "feBuilder:BOR", "Failed to create rb for fragment %s"
-						 , itebfragment->GetBufferName().c_str());
-			set_equipment_status(equipment[EBUILDER_EQUIPMENT].name, "Ended run", "#00ff00");
-			thread_cleanup();
-			return BM_CONFLICT;
-		}
-		
-		//Create one thread per fragment
-		int fid = itebfragment - ebfragment.begin();
-		status = pthread_create(&tid[fid], NULL, &fragment_thread, (void*)&*itebfragment);
-		if(status) {
-			cm_msg(MERROR,"feBuilder:BOR", "Couldn't create thread for fragment %d. Return code: %d"
-						 , fid, status);
-			set_equipment_status(equipment[EBUILDER_EQUIPMENT].name, "Ended run", "#00ff00");
-			thread_cleanup();
-			return SS_ABORT;
-		}
-		
-		// Register FragmentID for all the fragments -> make a thread even for the 1st one
-		itebfragment->SetFragmentID(fid);
-		itebfragment->SetThreadStatus(1);
-
-		// Register the correct DTM trigger mask id for this fragment.  
-		int dtm_trigger_mask_id = -1;
-		for(int i = 0; i < 8; i++){
-			if(dtm_fe_trigger_mask_map[i] >= 0 &&
-				 dtm_fe_trigger_mask_map[i] & itebfragment->GetTmask()){
-				dtm_trigger_mask_id = (1<<(i));				
-			}
-		}
-		itebfragment->SetDtmTmask(dtm_trigger_mask_id);
-		// Reset the timestamp difference between this fragment and the DTM fragment.
-		itebfragment->ResetTimeDiff();
-		
-		if (debug) {
-			printf(" pthread_create, FragmentID:%d\n", itebfragment->GetFragmentID());
-			printf(" buffer name:%s\n", itebfragment->GetBufferName().c_str());
-			printf(" buffer handler:%2d\n", itebfragment->GetBufferHandle());
-			printf(" bm_open status: %d\n", status1);
-			printf(" event request ID:%2d\n", itebfragment->GetRequestID());
-			printf(" event request status: %d\n", status2);
-			printf(" event id:%2d\n", itebfragment->GetEvID());
-			printf(" trigger mask:0x%4.4x\n", itebfragment->GetTmask());
-		}
-	}  // for fragment
-
-	// Done
-	set_equipment_status(equipment[EBUILDER_EQUIPMENT].name, "Started run", "#00ff00");
-
-
-	return SUCCESS;
+  // Get the ODB variable that determines whether to stop the run for timestamp mismatchs. 
+  size = sizeof(fStrictTimestampMatching); 
+  db_get_value(hDB, hsf, "strictTimestampMatching",&fStrictTimestampMatching, &size, TID_BOOL, TRUE);
+  
+  
+  /* local flag indicating that a run is in progress
+   * Todo: need to check the escape condition...
+   */
+  runInProgress = true;
+  
+  // flag to ensure we only stop run once if we have timestamp mismatchs
+  eor_transition_called = false;
+  
+  timestampErrorWarning = false;
+  
+  // Per found fragment in the ODB equipment list
+  for (itebfragment = ebfragment.begin(); itebfragment != ebfragment.end(); ++itebfragment) {
+    
+    // Reset thread status
+    itebfragment->SetThreadStatus(0);
+    
+    // Update Enable flag from ODB
+    int bsize = sizeof(BOOL);
+    bool fragE;
+    int status = db_get_value(itebfragment->GetODBHandle()
+                              , itebfragment->GetSettingsHandle(), "enable", &fragE, &bsize, TID_BOOL, FALSE);
+    itebfragment->SetEnable(fragE);
+    if (! itebfragment->IsEnabled()) {
+      cm_msg(MINFO, "ebuilder", "Fragment %s disabled", itebfragment->GetEqpName().c_str());
+      continue;   // Skip disabled fragment
+    }
+    
+    int check_fragment_running = cm_exist(itebfragment->GetFrontEndName().c_str(), TRUE);
+    if(check_fragment_running != CM_SUCCESS){
+      cm_msg(MERROR, "feBuilder:BOR", "Event Builder Fragment %s (program %s) is not running. Not allowed: abort run. Disable this EB fragment or start front-end."
+             , itebfragment->GetEqpName().c_str(),itebfragment->GetFrontEndName().c_str());			
+      set_equipment_status(equipment[EBUILDER_EQUIPMENT].name, "Ended run", "#00ff00");
+      thread_cleanup();
+      return BM_CONFLICT;
+      
+    }
+    
+    // Make sure the fragment buffer is not 'SYSTEM'.  That will presumably cause problems.
+    if(strcmp (itebfragment->GetBufferName().c_str(),"SYSTEM") == 0){
+      cm_msg(MERROR, "feBuilder:BOR", "Event Builder Fragment %s is writing to SYSTEM buffer. Not allowed: abort run. Disable this EB fragment."
+             , itebfragment->GetEqpName().c_str());			
+      set_equipment_status(equipment[EBUILDER_EQUIPMENT].name, "Ended run", "#00ff00");
+      thread_cleanup();
+      return BM_CONFLICT;
+    }
+    
+    // Set the binning for the QT summary histogram
+    itebfragment->SetRebinFactor(rebin_factor);
+    
+    // Connect to fragment buffer
+    int bh;
+    status1 = bm_open_buffer((itebfragment->GetBufferName().c_str()), BM_BUFFER_SIZE, &bh);
+    // Save buffer handle
+    if (status1 == BM_SUCCESS) {
+      itebfragment->SetBufferHandle(bh);
+    } else {
+      itebfragment->SetBufferHandle(-1);
+    }
+    
+    if (debug) printf("bm_open_buffer:%d\n", itebfragment->GetBufferHandle());
+    
+    if (itebfragment->GetBufferHandle() >= 0) {
+      // Register for specified channel event ID but all Trigger mask AND ALL EVENTS
+      int rid;
+      status2 = bm_request_event(itebfragment->GetBufferHandle(), itebfragment->GetEvID()
+                                 , TRIGGER_ALL, GET_ALL, &rid, NULL);
+      // Save event request ID
+      if (status2 == BM_SUCCESS) {
+        itebfragment->SetRequestID(rid);
+      } else {
+        itebfragment->SetRequestID(-1);
+      }
+    }
+    
+    if (debug) printf("bm_request_event:%d\n", itebfragment->GetRequestID());
+    
+    // Handle connection to buffer error
+    if (((status1 != BM_SUCCESS) && (status1 != BM_CREATED)) ||
+        ((status2 != BM_SUCCESS) && (status2 != BM_CREATED))) {
+      cm_msg(MERROR, "BOR_booking", "Open buffer/event request failure %s [%d %d]"
+             , itebfragment->GetEqpName().c_str(), status1, status2);
+      set_equipment_status(equipment[EBUILDER_EQUIPMENT].name, "Ended run", "#00ff00");
+      thread_cleanup();
+      return BM_CONFLICT;
+    }
+    
+    // Create ring buffer for fragment
+    status = rb_create(event_buffer_size, max_event_size, &rb_handle);
+    printf("Ring buffer size: %i ; max event: %i\n",event_buffer_size, max_event_size);
+    if(status == BM_SUCCESS) {
+      itebfragment->SetRingBufferHandle(rb_handle);
+      if (debug) printf("rb_create_event:%d\n", itebfragment->GetRingBufferHandle());
+      
+    } else {
+      cm_msg(MERROR, "feBuilder:BOR", "Failed to create rb for fragment %s"
+             , itebfragment->GetBufferName().c_str());
+      set_equipment_status(equipment[EBUILDER_EQUIPMENT].name, "Ended run", "#00ff00");
+      thread_cleanup();
+      return BM_CONFLICT;
+    }
+    
+    //Create one thread per fragment
+    int fid = itebfragment - ebfragment.begin();
+    status = pthread_create(&tid[fid], NULL, &fragment_thread, (void*)&*itebfragment);
+    if(status) {
+      cm_msg(MERROR,"feBuilder:BOR", "Couldn't create thread for fragment %d. Return code: %d"
+             , fid, status);
+      set_equipment_status(equipment[EBUILDER_EQUIPMENT].name, "Ended run", "#00ff00");
+      thread_cleanup();
+      return SS_ABORT;
+    }
+    
+    // Register FragmentID for all the fragments -> make a thread even for the 1st one
+    itebfragment->SetFragmentID(fid);
+    itebfragment->SetThreadStatus(1);
+    
+    // Register the correct DTM trigger mask id for this fragment.  
+    int dtm_trigger_mask_id = -1;
+    for(int i = 0; i < 8; i++){
+      if(dtm_fe_trigger_mask_map[i] >= 0 &&
+         dtm_fe_trigger_mask_map[i] & itebfragment->GetTmask()){
+        dtm_trigger_mask_id = (1<<(i));				
+      }
+    }
+    itebfragment->SetDtmTmask(dtm_trigger_mask_id);
+    // Reset the timestamp difference between this fragment and the DTM fragment.
+    itebfragment->ResetTimeDiff();
+    
+    if (debug) {
+      printf(" pthread_create, FragmentID:%d\n", itebfragment->GetFragmentID());
+      printf(" buffer name:%s\n", itebfragment->GetBufferName().c_str());
+      printf(" buffer handler:%2d\n", itebfragment->GetBufferHandle());
+      printf(" bm_open status: %d\n", status1);
+      printf(" event request ID:%2d\n", itebfragment->GetRequestID());
+      printf(" event request status: %d\n", status2);
+      printf(" event id:%2d\n", itebfragment->GetEvID());
+      printf(" trigger mask:0x%4.4x\n", itebfragment->GetTmask());
+    }
+  }  // for fragment
+  
+  // Done
+  set_equipment_status(equipment[EBUILDER_EQUIPMENT].name, "Started run", "#00ff00");
+  
+  
+  return SUCCESS;
 
 }
 
@@ -1154,15 +1118,10 @@ INT SNAssembly(char *pevent, INT off)
 	}				
       }
       
-      // Each thread can deal with its own V1720 filtering.
-      smartQTFilter->ResetV1720Analysis();
-      itebfragment->AddBanksToEvent(pevent, smartQTFilter);
+      itebfragment->AddBanksToEvent(pevent);
     }
   }
   
-  // V1740 filtering depends on all 4 V1720 threads, so only reset that now.
-  smartQTFilter->ResetV1740Analysis();
-
   INT ev_size = bk_size(pevent);
   if(ev_size == 0) {
     cm_msg(MINFO,"read_trigger_event", "******** Event size is 0, SN: %d", sn);
@@ -1215,7 +1174,6 @@ extern "C" INT interrupt_configure(INT cmd, INT source, POINTER_T adr)
  *    should be within some time window. If not abort run.
  * 3) Extract the rb "Extra Q-histo info" and cummulate an overall Q-histo composed
  *    of all the 4 V1720 Q-histos (one per V1720 fragment)
- * 4) Run Q-histos through FpFilter() to define the final event composition.
  * 5) Compose the final event
  * 6) send it to SYSTEM
  *
@@ -1280,10 +1238,6 @@ INT TSDeapAssembly(char *pevent, INT off)
     }
   }
 
-  // TODO: Can add some code here to make an event-level decision about filtering
-  // QT (e.g. if it looks WIMP-like we might want to save all ZLE). For now we treat
-  // all events the same.
-  // e.g. smartQTFilter->SetSaveAllZLE(true);
 
   // now add fragments to event, based on result of trigger decision
   for (itebfragment = ebfragment.begin(); itebfragment != ebfragment.end(); ++itebfragment) {
@@ -1293,21 +1247,16 @@ INT TSDeapAssembly(char *pevent, INT off)
 
     if(itebfragment == ebfragment.begin()) {
       // DTM bank is first and always saved
-      itebfragment->AddBanksToEvent(pevent, smartQTFilter);
+      itebfragment->AddBanksToEvent(pevent);
     } else{
       if(!(itebfragment->GetDtmTmask() & triggerMaskUsed)) {
         // If the fragment is not requested by DTM bank, then ignore
         continue;
       }
 
-      // Each thread can deal with its own V1720 filtering.
-      smartQTFilter->ResetV1720Analysis();
-      itebfragment->AddBanksToEvent(pevent, smartQTFilter);
+      itebfragment->AddBanksToEvent(pevent);
     }
   }
-
-  // V1740 filtering depends on all 4 V1720 threads, so only reset that now.
-  smartQTFilter->ResetV1740Analysis();
 
   
   if (sn % 500 == 0) printf(".");

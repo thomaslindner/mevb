@@ -22,10 +22,8 @@ This file contains the class definition for the event builder class
 
 #include "midas.h"
 #include "msystem.h"
-#include "ebSmartQTFilter.hxx"
 
 
-int FPFilter(DWORD *);
 
 /**
  * Contains all the methods necessary to:
@@ -93,7 +91,7 @@ public:
   bool DeleteNextEvent();                        //!<
   bool FillStatBank(char *, suseconds_t);        //!<
   bool FillBufferLevelBank(char *);              //!<
-	bool AddBanksToEvent(char * pevent, ebSmartQTFilter * smartQTFilter);   //!<
+  bool AddBanksToEvent(char * pevent);   //!<
   bool FillEventBank(char * pevent);             //!<
   bool GetDTMTsTmsk(void **, DWORD *, WORD *);   //!<
   DWORD GetDTMTimeStamp(void *);                 //!<

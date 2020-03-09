@@ -739,50 +739,45 @@ bool EBFragment::CheckTSAndGetQT(int idx, std::vector<int>& Qhisto, std::vector<
  * \brief   Compose the final event with all the fragments from the Rbs
  *
  * \param   [in/out]  Final event pointer
- * \param   [in]      Object for filtering some banks
  *
  * \return  true if ok 
  */
-bool EBFragment::AddBanksToEvent(char * pevent, ebSmartQTFilter* smartQTFilter)
+bool EBFragment::AddBanksToEvent(char * pevent)
 {
-
-
-	/*
-	 * pevent: points after the EVENT_HEADER (header alread composed in mfe
-	 * and initialized by the caller (bk_init32(pevent))
-	 *
-	 * src   : points at the EVENT_HEADER (full event)
-	 *         event size = pevent->data_size + sizeof(EVENT_HEADER)
-	 */
-	char *src;
-	// the src is in the rb and contains a full Midas event
-	int status = rb_get_rp(this->GetRingBufferHandle(), (void**)&src, 1000);
-	if (status == DB_TIMEOUT) {
-		cm_msg(MERROR,"AddBanksToEvent", "Got rp timeout for fragmentID %s %d", this->GetName().c_str(),this->GetFragmentID());
-		printf("### num events: %d\n", this->GetNumEventsInRB());
-		return false;
-	}
-
-	// Check that control word looks ok; currently just error message if bad.
-	bool controlCheck = CheckControlWord(src);
-
-
-  // Analyze the banks to see which ZLE blocks we should save.
-  smartQTFilter->AnalyzeBanks(src);
-  smartQTFilter->WriteFilteredBanks(pevent, src);
-
-	// Move Read pointer to next fragment
-	DWORD tevsize = ((EVENT_HEADER *)src)->data_size + sizeof(EVENT_HEADER);// + 4;
-	DWORD *qt_list = (DWORD*)src + tevsize/sizeof(DWORD);
-	int nQTBins = qt_list[2];
-	tevsize += (4+nQTBins)*sizeof(DWORD);
-
-	rb_increment_rp(this->GetRingBufferHandle(), tevsize );
-
-	// Inform main thread of new fragment
-	this->DecrementNumEventsInRB(); //atomic
-
-	return true;
+  
+  
+  /*
+   * pevent: points after the EVENT_HEADER (header alread composed in mfe
+   * and initialized by the caller (bk_init32(pevent))
+   *
+   * src   : points at the EVENT_HEADER (full event)
+   *         event size = pevent->data_size + sizeof(EVENT_HEADER)
+   */
+  char *src;
+  // the src is in the rb and contains a full Midas event
+  int status = rb_get_rp(this->GetRingBufferHandle(), (void**)&src, 1000);
+  if (status == DB_TIMEOUT) {
+    cm_msg(MERROR,"AddBanksToEvent", "Got rp timeout for fragmentID %s %d", this->GetName().c_str(),this->GetFragmentID());
+    printf("### num events: %d\n", this->GetNumEventsInRB());
+    return false;
+  }
+  
+  // Check that control word looks ok; currently just error message if bad.
+  bool controlCheck = CheckControlWord(src);
+  
+  
+  // Move Read pointer to next fragment
+  DWORD tevsize = ((EVENT_HEADER *)src)->data_size + sizeof(EVENT_HEADER);// + 4;
+  DWORD *qt_list = (DWORD*)src + tevsize/sizeof(DWORD);
+  int nQTBins = qt_list[2];
+  tevsize += (4+nQTBins)*sizeof(DWORD);
+  
+  rb_increment_rp(this->GetRingBufferHandle(), tevsize );
+  
+  // Inform main thread of new fragment
+  this->DecrementNumEventsInRB(); //atomic
+  
+  return true;
 }
 
 //---------------------------------------------------------------------------------
@@ -948,25 +943,4 @@ std::pair<unsigned int,unsigned int> EBFragment::GetDTMTriggerMaskUsed(){
 	return std::pair<unsigned int,unsigned int>(-1,-1);
 }
 
-
-//---------------------------------------------------------------------------------
-/**
- * \brief   extract the fragment event from the ring buffer
- *
- * 1) Extract the TimeStamp from the "Extra" area and compare it to the DTMTref
- * 3) Extract the cummulated the qhisto from the "Extra" area
- *
- * \param   [in]   first bank index for the bank search
- * \param   [in]   pev Pointer to event top
- * \param   [out]  qhisto Charge histogram from the rb "extra" area
- * \param   [out]  TimeStamp reference from the DTM for QT_TS comparaison
- *
- * \return  true fragment extracted successfully, Time stamp matches
- */
-int FPFilter(DWORD * qhisto)
-{
-	int box = 1;
-
-	return box;
-}
 

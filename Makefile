@@ -112,20 +112,15 @@ fe : feBuilder.exe
 # Single-thread frontend
 ####################################################################
 
-feBuilder.exe: $(LIB) $(MIDAS_LIB)/mfe.o feBuilder.o ebFragment.o ebFilterDecision.o ebSmartQTFilter.o
-	$(CXX) $(OSFLAGS) feBuilder.o ebFragment.o ebSmartQTFilter.o ebFilterDecision.o $(MIDAS_LIB)/mfe.o $(LIB) $(LIBMIDAS) -o $@ $(LDFLAGS)
+feBuilder.exe: $(LIB) $(MIDAS_LIB)/mfe.o feBuilder.o ebFragment.o
+	$(CXX) $(OSFLAGS) feBuilder.o ebFragment.o $(MIDAS_LIB)/mfe.o $(LIB) $(LIBMIDAS) -o $@ $(LDFLAGS)
 
-feBuilder.o : feBuilder.cxx ebSmartQTFilter.o
-	$(CXX) $(CFLAGS) $(OSFLAGS) ebSmartQTFilter.o $(INCS) -c $< -o $@
-
-ebFragment.o : ebFragment.cxx ebSmartQTFilter.o
-	$(CXX) $(CFLAGS) $(OSFLAGS) ebSmartQTFilter.o $(INCS) -c $< -o $@
-
-ebFilterDecision.o : ebFilterDecision.cxx
+feBuilder.o : feBuilder.cxx
 	$(CXX) $(CFLAGS) $(OSFLAGS) $(INCS) -c $< -o $@
 
-ebSmartQTFilter.o : ebSmartQTFilter.cxx
+ebFragment.o : ebFragment.cxx 
 	$(CXX) $(CFLAGS) $(OSFLAGS) $(INCS) -c $< -o $@
+
 
 $(MIDAS_LIB)/mfe.o:
 	@cd $(MIDASSYS) && make

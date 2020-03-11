@@ -86,15 +86,12 @@ public:
   bool ReadFragment(void *);         //!< Read event from buffer
   DWORD GetSNFragment(void);         //!< Get current fragment event serial number
   int BankListOfFragment(void *);                      //!< Print Bank listing
-  bool CheckTSAndGetQT(int idx, std::vector<int>& Qhisto, std::vector<int>& Nhisto, DWORD ts); //!<
   bool FetchHeaderNextEvent(uint32_t * header);  //!<
   bool DeleteNextEvent();                        //!<
   bool FillStatBank(char *, suseconds_t);        //!<
   bool FillBufferLevelBank(char *);              //!<
   bool AddBanksToEvent(char * pevent);   //!<
   bool FillEventBank(char * pevent);             //!<
-  bool GetDTMTsTmsk(void **, DWORD *, WORD *);   //!<
-  DWORD GetDTMTimeStamp(void *);                 //!<
   bool GetV1720Fragment(void **, DWORD * dtmtsl, DWORD * dtmtsh, DWORD ** qhisto);
   bool Poll(DWORD*);                                            //!<
   int SetFragmentRecord(HNDLE h);                               //!<

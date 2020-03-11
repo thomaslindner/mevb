@@ -146,7 +146,6 @@ INT frontend_loop();
 extern void interrupt_routine(void);  //!< Interrupt Service Routine
 
 
-INT TSDeapAssembly(char *pevent, INT off);
 INT SNAssembly(char *pevent, INT off);
 INT read_buffer_level(char *pevent, INT off);
 void * fragment_thread(void *);
@@ -176,8 +175,7 @@ EQUIPMENT equipment[] =
        0,                       /* don't log history */
        "", "", ""
      },
-   TSDeapAssembly,       /* readout routine */
-   //SNAssembly,       /* readout routine */
+   SNAssembly,       /* readout routine */
  },
  
  {
@@ -298,7 +296,6 @@ INT frontend_init() {
       size = sizeof(INT);
       db_get_value(hDB, hSubkey, "common/type", &type, &size, TID_INT, 0);
       if (type & EQ_EB) {
-        std::cout << "Found an equipment to add. type= " << std::hex << type << std::dec << std::endl;
         size = sizeof(fename);
         db_get_value(hDB, hSubkey, "common/Frontend name", (void *)fename, &size, TID_STRING, 0);
         std::cout << "Adding equipment fragment : " << fename << std::endl;
@@ -402,12 +399,12 @@ INT frontend_init() {
 	       , "Modulo", &_modulo, &size, TID_INT, TRUE);  // Create if not present
   
   // CPU core allocation (0 for the main thread)
-  //cpu_set_t mask;
-  //CPU_ZERO(&mask);
-  //CPU_SET(0, &mask);  //Main thread to core 0
-  //if( sched_setaffinity(0, sizeof(mask), &mask) < 0 ) {
-  //printf("ERROR setting cpu affinity for main thread: %s\n", strerror(errno));
-  //}
+  cpu_set_t mask;
+  CPU_ZERO(&mask);
+  CPU_SET(0, &mask);  //Main thread to core 0
+  if( sched_setaffinity(0, sizeof(mask), &mask) < 0 ) {
+    printf("ERROR setting cpu affinity for main thread: %s\n", strerror(errno));
+  }
   
   std::cout << "Finished initialization"<<std::endl;
   // web status
@@ -731,14 +728,14 @@ void * fragment_thread(void * arg) {
   
   // Todo: Code to be checked
   // Lock each thread to a different cpu core
-  //cpu_set_t mask;
-  //CPU_ZERO(&mask);
+  cpu_set_t mask;
+  CPU_ZERO(&mask);
   switch(NBCORES) {
   case 1:
     //Don't do anything
     break;
   case 2:
-    //CPU_SET(fragment % 2, &mask); //TRIUMF test PC. Even buffer on core 0, odd buffer on core 1
+    CPU_SET(fragment % 2, &mask); //TRIUMF test PC. Even buffer on core 0, odd buffer on core 1
     break;
   default:
     /* This will spread the threads on all cores except core 0 when the main thread resides.
@@ -746,11 +743,11 @@ void * fragment_thread(void * arg) {
      * threads (fragment) 0,1,2,3 will go on cores 1,2,3,4
      * ex 2: NBCORES 4, 4 threads:
      * threads (fragment) 0,1,2,3 will go on cores 1,2,3,1     */
-    //CPU_SET((fragment % (NBCORES-1)) + 1, &mask);
+    CPU_SET((fragment % (NBCORES-1)) + 1, &mask);
     break;
   }
   
-#if 0
+#if 1
   if( sched_setaffinity(0, sizeof(mask), &mask) < 0 ) {
     printf("ERROR setting cpu affinity for thread %d: %s\n", fragment, strerror(errno));
   }
@@ -1051,19 +1048,11 @@ extern "C" INT poll_event(INT source, INT count, BOOL test)
       continue;
     }
     
-    // Grab the output mask from DTM bank.
-    std::pair<unsigned int,unsigned int> result = itebfragment->GetDTMTriggerMaskUsed();
-    int triggerMaskUsed = result.first;
-    
     // Loop over other fragments.
     for(unsigned int ifrag = 1; ifrag < ebfragment.size(); ifrag++){
       
-      std::cout << "Check ifrag: " << ifrag << std::endl;
       // If the fragment is disabled, then ignore
       if (!ebfragment[ifrag].GetEnable()){continue;}
-      
-      // If the fragment is not requested by DTM bank, then ignore
-      if(!(ebfragment[ifrag].GetDtmTmask() & triggerMaskUsed)){ continue; }
       
       // Now check if this fragment has available events in ring buffer
       if(ebfragment[ifrag].GetNumEventsInRB() == 0) {
@@ -1120,6 +1109,8 @@ INT SNAssembly(char *pevent, INT off)
 	  }
 	}				
       }
+
+      // Add some time stamp checks here too!!!
       
       itebfragment->AddBanksToEvent(pevent);
     }
@@ -1161,116 +1152,6 @@ extern "C" INT interrupt_configure(INT cmd, INT source, POINTER_T adr)
   return SUCCESS;
 }
 
-//---------------------------------------------------------------------------------
-/**
- * \brief   Event Assembly and "Readout"
- *
- * Event readout routine.  In this case (event builder)
- * Go through all the enabled ring buffer for extracting the event and composing the
- * final event (going to SYSTEM)
- * The Final event is composed of:
- * DTM bank & a selected set of banks from the V1720, V1740, VETO events.
- * The selection is based on the DTM filter result (FpResult()).
- *
- * 1) Get the DTM time stamp as reference
- * 2) Get the time stamp from the rb "Extra info" and compare them to the DTM TS.
- *    should be within some time window. If not abort run.
- * 3) Extract the rb "Extra Q-histo info" and cummulate an overall Q-histo composed
- *    of all the 4 V1720 Q-histos (one per V1720 fragment)
- * 5) Compose the final event
- * 6) send it to SYSTEM
- *
- * \param   [in]  pevent Pointer to event buffer
- * \param   [in]  off Caller info (unused here), see mfe.c
- *
- * \return  Size of the event
- */
-INT TSDeapAssembly(char *pevent, INT off)
-{
-  
-  if (!runInProgress) return 0;
-  
-  sn = SERIAL_NUMBER(pevent);
-  
-  // Prepare event for MIDAS bank
-  bk_init32(pevent);
-  
-  /* loop over the involved fragment for that DTM trigger mask
-   * read an event (Midas event composed of (ZLE+QT) + 2DWORD(Tsmin,Tsmax) + Q-histo
-   * Keep the pevent pointer to the event fragment
-   */
-  
-  // Check for data in DTM fragment (first fragment)
-  itebfragment = ebfragment.begin();
-  
-  // Grab the output mask from DTM bank.
-  std::pair<unsigned int,unsigned int> result = itebfragment->GetDTMTriggerMaskUsed();
-  unsigned int triggerMaskUsed = result.first;
-  unsigned int dtmTimestamp = result.second;
-  
-  // Q vs T histogram, summed over all boards.
-  std::vector<int> Qhisto;
-  // Same, but not charge-weighted
-  std::vector<int> Nhisto;
-  
-  // Loop over other fragments.
-  for(unsigned int ifrag = 1; ifrag < ebfragment.size(); ifrag++){
-    
-    // If the fragment is disabled, then ignore
-    if (!ebfragment[ifrag].GetEnable()){continue;}
-    
-    // If the fragment is not requested by DTM bank, then ignore
-    if(!(ebfragment[ifrag].GetDtmTmask() & triggerMaskUsed)){ continue; }
-    
-    // Function will check the timestamp for fragment. 
-    // It will also add to the Q vs T histogram, if this is V1720 fragment.
-    bool bTSMatch = ebfragment[ifrag].CheckTSAndGetQT(0, Qhisto, Nhisto, dtmTimestamp);
-
-    if (!bTSMatch){
-			timestampErrorWarning = true;
-			
-			if(fStrictTimestampMatching) { // Only do anything if we asked for strict timestamp checks.	 			
-			
-				// Make sure that we only call cm_transition once... multiple calls seems to confuse things.
-				if(!eor_transition_called){
-					cm_msg(MERROR, "Assembly", "Failure in timestamp check and assembly of fragment %s; stopping run.",ebfragment[ifrag].GetEqpName().c_str());
-					cm_transition(TR_STOP, 0, NULL, 0, TR_DETACH, 0);
-					eor_transition_called = true;
-				}
-			}
-    }
-  }
-
-
-  // now add fragments to event, based on result of trigger decision
-  for (itebfragment = ebfragment.begin(); itebfragment != ebfragment.end(); ++itebfragment) {
-
-    // If the fragment is disabled, then ignore
-    if (!itebfragment->GetEnable()){continue;}
-
-    if(itebfragment == ebfragment.begin()) {
-      // DTM bank is first and always saved
-      itebfragment->AddBanksToEvent(pevent);
-    } else{
-      if(!(itebfragment->GetDtmTmask() & triggerMaskUsed)) {
-        // If the fragment is not requested by DTM bank, then ignore
-        continue;
-      }
-
-      itebfragment->AddBanksToEvent(pevent);
-    }
-  }
-
-  
-  if (sn % 500 == 0) printf(".");
-  
-  INT ev_size2 = bk_size(pevent);
-  if(ev_size2 == 0)
-    cm_msg(MINFO,"read_trigger_event", "******** Event size is 0, SN: %d", sn);
-
-  return ev_size2;
-  
-}
 
 //---------------------------------------------------------------------------------
 
